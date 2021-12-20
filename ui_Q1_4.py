@@ -92,10 +92,13 @@ class MainWindow(QMainWindow, windowUI):
         pass
 
     def preprocessing(self):
+        self.tracking.initial()
         self.tracking.processing()
         pass
 
     def video_tracking(self):
+        self.tracking.initial()
+        self.tracking.processing(False)
         pass
 
     def perspective_transform(self):

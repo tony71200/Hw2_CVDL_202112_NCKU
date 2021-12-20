@@ -3,16 +3,14 @@ from PIL import Image
 import cv2 as cv
 import numpy as np
 import os
-from numpy.linalg.linalg import eigh
-from skimage.util import dtype
 from sklearn.decomposition import PCA
 from glob import glob
 import matplotlib.pyplot as plt
 
-from numpy.core.numeric import ones_like, zeros_like
+from numpy.core.numeric import zeros_like
 
 def concath(list_array:list):
-    return cv.vconcat(list_array)
+    return cv.hconcat(list_array)
 
 def Q1(path):
     """
@@ -70,23 +68,34 @@ def Q1(path):
 
 class Q2():
     def __init__(self, path:str):
-        if not os.path.exists(path):
+        self.path = path
+        self.initial()
+        pass
+
+    def initial(self):
+        if not os.path.exists(self.path):
             return
-        self.cap = cv.VideoCapture(path)
-        self.keypoints = []
+        self.cap = cv.VideoCapture(self.path)
+        self.keypoints_p0 = []
         # Initialize parameter settiing using cv2.SimpleBlobDetector
         self.param = cv.SimpleBlobDetector_Params()
         self.param.minThreshold = 80
-        self.param.maxThreshold = 150
+        self.param.maxThreshold = 160
         self.param.filterByArea = True
-        self.param.minArea = 24
+        self.param.minArea = 25
         self.param.maxArea = 90
         self.param.filterByCircularity = True
-        self.param.minCircularity = 0.85
+        self.param.minCircularity = 0.75
         self.param.filterByConvexity = True
-        self.param.minConvexity = 0.6
+        self.param.minConvexity = 0.9
         self.param.filterByInertia = True
         self.param.minInertiaRatio = 0.52
+        self.get_p0 = False
+
+        # Parameters for lucas kanade optical flow
+        self.lk_params = dict(winSize=(11, 11),
+                     maxLevel=3,
+                     criteria=(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10, 0.03))
 
         try:
             ver = (cv.__version__).split(".")
@@ -96,7 +105,12 @@ class Q2():
                 self.detector = cv.SimpleBlobDetector_create(self.param)
         except (ValueError, ZeroDivisionError):
             self.detector = cv.SimpleBlobDetector_create(self.param)
-        
+        self.old_frames = None
+        self.mask = None
+
+    def reset_status(self):
+        self.initial()        
+    
     @staticmethod
     def draw_boundingbox(frame, x_center, y_center):
         x_lelf = x_center - 6
@@ -121,27 +135,54 @@ class Q2():
         if frame.shape[2:] == 3:
             frame = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
         keypoints = self.detector.detect(frame)
+        p0 = []
         for kp in keypoints:
             x, y = kp.pt
             frame_copy = self.draw_boundingbox(frame_copy, int(x), int(y))
-            self.keypoints.append((int(x), int(y)))
+            p0.append([np.float32(x), np.float32(y)])
+            # self.keypoints.reshape(7,1,2)
+        if not self.get_p0:
+            self.keypoints_p0 = np.expand_dims(np.array(p0),axis=1)
+            self.get_p0 = True
+            # Create a mask image for drawing purposes
+            self.mask = np.zeros_like(frame_copy)
+            self.old_frames = frame
         return frame_copy
 
-    def tracking(self):
-        pass
-
+    def tracking(self, frame):
+        frame_gray = frame.copy()
+        if frame_gray.shape[2:] == 3:
+            frame_gray = cv.cvtColor(frame_gray(), cv.COLOR_BGR2GRAY)
+        p1, st, err = cv.calcOpticalFlowPyrLK(
+            self.old_frames, 
+            frame_gray, self.keypoints_p0, None, **self.lk_params
+        )
+        # Select good points
+        good_new = p1[st == 1]
+        good_old = self.keypoints_p0[st == 1]
+        for i, (new, old) in enumerate(zip(good_new, good_old)):
+            a, b = new.ravel()
+            c, d = old.ravel()
+            self.mask = cv.line(self.mask, (int(a), int(b)), (int(c), int(d)), (0, 0, 255), 3)
+            frame = cv.circle(frame, (int(a), int(b)), 5, (0,255,255), -1)
+        frame = cv.add(frame, self.mask)
+        self.keypoints_p0 = good_new.reshape(-1, 1, 2)
+        self.old_frames = frame_gray.copy()
+        return frame
 
     def processing(self, prepro = True):
         while self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
                 preprocessing_frame = self.preprocessing(frame)
+
+                tracking_frame = self.tracking(frame)
                 if prepro:
                     self.show_video(preprocessing_frame, "2.1 Processing")
-                    if (cv.waitKey(5) & 0xFF) == ord("q"):
-                        break
                 else:
-                    pass
+                    self.show_video(tracking_frame, "2.2 Tracking")
+                if (cv.waitKey(5) & 0xFF) == ord("q"):
+                        break
             else:
                 break
         self.cap.release()
@@ -211,9 +252,10 @@ def Q3(path_video, path_image):
 
                 retval, mask = cv.findHomography(np.asfarray(pts_src), np.asfarray(pts_dst))
                 out = cv.warpPerspective(image, retval, (frame.shape[1], frame.shape[0]))
-                mask_image = cv.warpPerspective(np.ones_like(image)*255, retval, (frame.shape[1], frame.shape[0]))
-                # mask_image = np.zeros_like(out)
-                # mask_image[out[:,:,:] > 0] = 255
+                # mask_image = cv.warpPerspective(np.ones_like(image)*255, retval, (frame.shape[1], frame.shape[0]))
+
+                mask_image = np.zeros_like(out)
+                mask_image[(out[:,:,:]*255) > 0] = 255
                 # out = cv.add(frame, out)
                 mask_image = cv.bitwise_not(mask_image)
                 frame_mask = cv.bitwise_and(frame, mask_image)
@@ -299,9 +341,10 @@ class Q4():
 
 
 if __name__ == "__main__":
-    # trans = Q2(r"./Q2_Image/optical_flow.mp4")
-    # trans.processing()
+    trans = Q2(r"./Q2_Image/optical_flow.mp4")
+    trans.processing(False)
+    # Q3(r"./Q3_Image/perspective_transform.mp4", r"./Q3_Image/pokemon.jpg")
 
-    process_pca = Q4(r"./Q4_Image", 29)
-    process_pca.imageReconstruction()
-    process_pca.reconstructionErrorComputing()
+    # process_pca = Q4(r"./Q4_Image", 29)
+    # process_pca.imageReconstruction()
+    # process_pca.reconstructionErrorComputing()
